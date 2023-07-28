@@ -8,19 +8,91 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/pci-epc.h>
+#include <asm/io.h>
+
+/*
+ *
+ */
+enum CONFIG_OFFSETS {
+    QEMU_EP_CONFIG_OFFSET_PCI_CONFIG = 0,
+    QEMU_EP_CONFIG_OFFSET_BAR0 = sizeof(struct pci_epf_header),
+};
 
 struct qemu_ep {
 	void __iomem *cfg_base;
 };
 
+enum {
+    // for pci configration space
+    QEP_REG_OFFSET_VENDOR_ID = 0x0,
+    QEP_REG_OFFSET_DEVICE_ID = 0x2,
+    QEP_REG_OFFSET_REVISON_ID = 0x4,
+    QEP_REG_OFFSET_PROG_ID = 0x5,
+    QEP_REG_OFFSET_SUB_CLASS_CODE = 0x6,
+    QEP_REG_OFFSET_CLASS_CODE = 0x7,
+    QEP_REG_OFFSET_CACHE_LINE_SIZE = 0x8,
+    QEP_REG_OFFSET_SUBSYS_VENDOR_ID = 0xc,
+    QEP_REG_OFFSET_SUBSYS_ID = 0xe,
+    QEP_REG_OFFSET_IRQ_PIN = 0x10,
+
+    // for BAR configuration
+    QEP_REG_OFFSET_BAR_START = 0x14,
+    QEP_REG_OFFSET_BAR_MASK = QEP_REG_OFFSET_BAR_START,
+    QEP_REG_OFFSET_BAR_NO = 0x15,
+    QEP_REG_OFFSET_BAR_FLAGS = 0x18,
+    QEP_REG_OFFSET_BAR_PHYS_ADDR = 0x1c,
+    QEP_REG_OFFSET_BAR_SIZE = 0x24,
+
+    QEP_REG_SIZE = 0x2c
+};
+
 #define QEMU_EP_DRV_NAME "QEMU PCIe EP driver"
+
+static inline u8 qemu_ep_cfg_read8(struct qemu_ep *qep, unsigned offset)
+{
+    return ioread8(qep->cfg_base + offset);
+}
+
+static inline void qemu_ep_cfg_write8(struct qemu_ep *qep, unsigned offset, u8 value)
+{
+    iowrite8(value, qep->cfg_base + offset);
+}
+
+static inline void qemu_ep_cfg_write16(struct qemu_ep *qep, unsigned offset, u16 value)
+{
+    iowrite16(value, qep->cfg_base + offset);
+}
+
+static inline void  qemu_ep_cfg_write32(struct qemu_ep *qep, unsigned offset, u32 value)
+{
+    iowrite32(value, qep->cfg_base + offset);
+}
+
+static inline void qemu_ep_cfg_write64(struct qemu_ep *qep, unsigned offset, u64 value)
+{
+//#if CONFIG_64BIT
+//    iowrite64(value, qep->cfg_base + offset);
+//#else
+    iowrite32(value, qep->cfg_base + offset);
+    iowrite32(value >> 32, qep->cfg_base + offset + 4);
+//#endif
+}
 
 static int qemu_ep_write_header(struct pci_epc *epc, u8 fn, u8 vfn,
 				struct pci_epf_header *hdr)
 {
 	struct qemu_ep *qep = epc_get_drvdata(epc);
 
-	memcpy_toio(qep->cfg_base, hdr, sizeof(*hdr));
+    qemu_ep_cfg_write16(qep, QEP_REG_OFFSET_VENDOR_ID, hdr->vendorid);
+    qemu_ep_cfg_write16(qep, QEP_REG_OFFSET_DEVICE_ID, hdr->deviceid);
+    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_REVISON_ID, hdr->revid);
+    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_PROG_ID, hdr->progif_code);
+    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_SUB_CLASS_CODE, hdr->subclass_code);
+    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_CLASS_CODE, hdr->baseclass_code);
+    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_CACHE_LINE_SIZE, hdr->cache_line_size);
+    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_SUBSYS_VENDOR_ID, hdr->subsys_vendor_id);
+    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_SUBSYS_ID, hdr->subsys_id);
+    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_IRQ_PIN, hdr->interrupt_pin);
 
 	return 0;
 }
@@ -28,12 +100,24 @@ static int qemu_ep_write_header(struct pci_epc *epc, u8 fn, u8 vfn,
 static int qemu_ep_set_bar(struct pci_epc *epc, u8 fn, u8 vfn,
 			   struct pci_epf_bar *bar)
 {
-	return -ENOTSUPP;
+	struct qemu_ep *qep = epc_get_drvdata(epc);
+    u8 mask;
+
+    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_BAR_NO, bar->barno);
+    qemu_ep_cfg_write64(qep, QEP_REG_OFFSET_BAR_PHYS_ADDR, bar->phys_addr);
+    qemu_ep_cfg_write64(qep, QEP_REG_OFFSET_BAR_SIZE, bar->size);
+    qemu_ep_cfg_write32(qep, QEP_REG_OFFSET_BAR_FLAGS, bar->flags);
+
+    mask = qemu_ep_cfg_read8(qep, QEP_REG_OFFSET_BAR_MASK) | 1 << bar->barno;
+    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_BAR_MASK, mask);
+
+	return 0;
 }
 
 static void qemu_ep_clear_bar(struct pci_epc *epc, u8 fn, u8 vfn,
 			      struct pci_epf_bar *bar)
 {
+// 	struct qemu_ep *qep = epc_get_drvdata(epc);
 }
 
 static int qemu_ep_map_addr(struct pci_epc *epc, u8 fn, u8 vfn,
@@ -55,7 +139,7 @@ static int qemu_ep_raise_irq(struct pci_epc *epc, u8 fn, u8 vfn,
 
 static int qemu_ep_start(struct pci_epc *epc)
 {
-	return -ENOTSUPP;
+	return 0;
 }
 
 static const struct pci_epc_features qemu_epc_features = {
