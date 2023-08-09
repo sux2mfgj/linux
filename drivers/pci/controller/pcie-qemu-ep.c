@@ -5,6 +5,7 @@
  *
  */
 
+#include "asm-generic/pci_iomap.h"
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/pci-epc.h>
@@ -13,37 +14,22 @@
 /*
  *
  */
-enum CONFIG_OFFSETS {
-    QEMU_EP_CONFIG_OFFSET_PCI_CONFIG = 0,
-    QEMU_EP_CONFIG_OFFSET_BAR0 = sizeof(struct pci_epf_header),
+
+enum {
+	QEMU_EP_BAR_CFG_OFF_MASK = 0x00,
+	QEMU_EP_BAR_CFG_OFF_NUMBER = 0x01,
+	QEMU_EP_BAR_CFG_OFF_FLAGS = 0x02,
+	QEMU_EP_BAR_CFG_OFF_RSV = 0x04,
+	QEMU_EP_BAR_CFG_OFF_PHYS_ADDR = 0x08,
+	QEMU_EP_BAR_CFG_OFF_SIZE = 0x10,
+
+	QEMU_EP_BAR_CFG_SIZE = 0x18
 };
 
 struct qemu_ep {
 	void __iomem *cfg_base;
-};
-
-enum {
-    // for pci configration space
-    QEP_REG_OFFSET_VENDOR_ID = 0x0,
-    QEP_REG_OFFSET_DEVICE_ID = 0x2,
-    QEP_REG_OFFSET_REVISON_ID = 0x4,
-    QEP_REG_OFFSET_PROG_ID = 0x5,
-    QEP_REG_OFFSET_SUB_CLASS_CODE = 0x6,
-    QEP_REG_OFFSET_CLASS_CODE = 0x7,
-    QEP_REG_OFFSET_CACHE_LINE_SIZE = 0x8,
-    QEP_REG_OFFSET_SUBSYS_VENDOR_ID = 0xc,
-    QEP_REG_OFFSET_SUBSYS_ID = 0xe,
-    QEP_REG_OFFSET_IRQ_PIN = 0x10,
-
-    // for BAR configuration
-    QEP_REG_OFFSET_BAR_START = 0x14,
-    QEP_REG_OFFSET_BAR_MASK = QEP_REG_OFFSET_BAR_START,
-    QEP_REG_OFFSET_BAR_NO = 0x15,
-    QEP_REG_OFFSET_BAR_FLAGS = 0x18,
-    QEP_REG_OFFSET_BAR_PHYS_ADDR = 0x1c,
-    QEP_REG_OFFSET_BAR_SIZE = 0x24,
-
-    QEP_REG_SIZE = 0x2c
+	void __iomem *bar_base;
+	void __iomem *ctl_base;
 };
 
 #define QEMU_EP_DRV_NAME "QEMU PCIe EP driver"
@@ -78,21 +64,49 @@ static inline void qemu_ep_cfg_write64(struct qemu_ep *qep, unsigned offset, u64
 //#endif
 }
 
+static inline uint8_t qemu_ep_bar_cfg_read8(struct qemu_ep *qep, unsigned offset)
+{
+	return ioread8(qep->bar_base + offset);
+}
+
+static inline void qemu_ep_bar_cfg_write8(struct qemu_ep *qep, unsigned offset, uint8_t value)
+{
+	iowrite8(value, qep->bar_base + offset);
+}
+
+static inline void qemu_ep_bar_cfg_write32(struct qemu_ep *qep, unsigned offset, uint32_t value)
+{
+	iowrite32(value, qep->bar_base + offset);
+}
+
+static inline void qemu_ep_bar_cfg_write64(struct qemu_ep *qep, unsigned offset, uint64_t value)
+{
+	qemu_ep_bar_cfg_write32(qep, offset, (uint32_t)value);
+	qemu_ep_bar_cfg_write32(qep, offset + 4, value >> 32);
+}
+
+static inline void qemu_ep_ctl_write8(struct qemu_ep *qep, unsigned offset, uint64_t value)
+{
+	iowrite8(value, qep->ctl_base + offset);
+}
+
 static int qemu_ep_write_header(struct pci_epc *epc, u8 fn, u8 vfn,
 				struct pci_epf_header *hdr)
 {
 	struct qemu_ep *qep = epc_get_drvdata(epc);
 
-    qemu_ep_cfg_write16(qep, QEP_REG_OFFSET_VENDOR_ID, hdr->vendorid);
-    qemu_ep_cfg_write16(qep, QEP_REG_OFFSET_DEVICE_ID, hdr->deviceid);
-    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_REVISON_ID, hdr->revid);
-    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_PROG_ID, hdr->progif_code);
-    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_SUB_CLASS_CODE, hdr->subclass_code);
-    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_CLASS_CODE, hdr->baseclass_code);
-    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_CACHE_LINE_SIZE, hdr->cache_line_size);
-    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_SUBSYS_VENDOR_ID, hdr->subsys_vendor_id);
-    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_SUBSYS_ID, hdr->subsys_id);
-    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_IRQ_PIN, hdr->interrupt_pin);
+	pr_info("%s: vendor 0x%x, device 0x%x\n", __func__, hdr->vendorid, hdr->deviceid);
+
+  qemu_ep_cfg_write16(qep, PCI_VENDOR_ID, hdr->vendorid);
+  qemu_ep_cfg_write16(qep, PCI_DEVICE_ID, hdr->deviceid);
+  qemu_ep_cfg_write8(qep, PCI_REVISION_ID, hdr->revid);
+  qemu_ep_cfg_write8(qep, PCI_CLASS_PROG, hdr->progif_code);
+  qemu_ep_cfg_write8(qep, PCI_CLASS_DEVICE, hdr->baseclass_code);
+  qemu_ep_cfg_write8(qep, PCI_CLASS_DEVICE + 1, hdr->subclass_code);
+  qemu_ep_cfg_write8(qep, PCI_CACHE_LINE_SIZE, hdr->cache_line_size);
+  qemu_ep_cfg_write8(qep, PCI_SUBSYSTEM_VENDOR_ID, hdr->subsys_vendor_id);
+  qemu_ep_cfg_write8(qep, PCI_SUBSYSTEM_ID, hdr->subsys_id);
+  qemu_ep_cfg_write8(qep, PCI_INTERRUPT_PIN, hdr->interrupt_pin);
 
 	return 0;
 }
@@ -101,15 +115,17 @@ static int qemu_ep_set_bar(struct pci_epc *epc, u8 fn, u8 vfn,
 			   struct pci_epf_bar *bar)
 {
 	struct qemu_ep *qep = epc_get_drvdata(epc);
-    u8 mask;
+  u8 mask;
 
-    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_BAR_NO, bar->barno);
-    qemu_ep_cfg_write64(qep, QEP_REG_OFFSET_BAR_PHYS_ADDR, bar->phys_addr);
-    qemu_ep_cfg_write64(qep, QEP_REG_OFFSET_BAR_SIZE, bar->size);
-    qemu_ep_cfg_write32(qep, QEP_REG_OFFSET_BAR_FLAGS, bar->flags);
+  pr_info("%s:%d bar %d\n", __func__, __LINE__, bar->barno);
 
-    mask = qemu_ep_cfg_read8(qep, QEP_REG_OFFSET_BAR_MASK) | 1 << bar->barno;
-    qemu_ep_cfg_write8(qep, QEP_REG_OFFSET_BAR_MASK, mask);
+	qemu_ep_bar_cfg_write8(qep, QEMU_EP_BAR_CFG_OFF_NUMBER, bar->barno);
+	qemu_ep_bar_cfg_write64(qep, QEMU_EP_BAR_CFG_OFF_PHYS_ADDR, bar->phys_addr);
+  qemu_ep_bar_cfg_write64(qep, QEMU_EP_BAR_CFG_OFF_SIZE, bar->size);
+  qemu_ep_bar_cfg_write32(qep, QEMU_EP_BAR_CFG_OFF_FLAGS, bar->flags);
+
+  mask = qemu_ep_bar_cfg_read8(qep, QEMU_EP_BAR_CFG_OFF_MASK) | BIT(bar->barno);
+  qemu_ep_bar_cfg_write8(qep, QEMU_EP_BAR_CFG_OFF_MASK, mask);
 
 	return 0;
 }
@@ -117,28 +133,41 @@ static int qemu_ep_set_bar(struct pci_epc *epc, u8 fn, u8 vfn,
 static void qemu_ep_clear_bar(struct pci_epc *epc, u8 fn, u8 vfn,
 			      struct pci_epf_bar *bar)
 {
-// 	struct qemu_ep *qep = epc_get_drvdata(epc);
+	struct qemu_ep *qep = epc_get_drvdata(epc);
+	uint8_t mask;
+
+	mask = qemu_ep_bar_cfg_read8(qep, QEMU_EP_BAR_CFG_OFF_MASK) & ~BIT(bar->barno);
+  qemu_ep_bar_cfg_write8(qep, QEMU_EP_BAR_CFG_OFF_MASK, mask);
 }
 
 static int qemu_ep_map_addr(struct pci_epc *epc, u8 fn, u8 vfn,
 			    phys_addr_t addr, u64 pci_addr, size_t size)
 {
+	pr_info("%s phsy 0x%llx pci 0x%llx size 0x%lx\n", __func__, addr, pci_addr, size);
 	return -ENOTSUPP;
 }
 
 static void qemu_ep_unmap_addr(struct pci_epc *epc, u8 fn, u8 vfn,
 			       phys_addr_t addr)
 {
+	pr_info("%s addr 0x%llx\n", __func__, addr);
 }
 
 static int qemu_ep_raise_irq(struct pci_epc *epc, u8 fn, u8 vfn,
 			     enum pci_epc_irq_type type, u16 interrupt_num)
 {
+	pr_info("%s\n", __func__);
 	return -ENOTSUPP;
 }
 
 static int qemu_ep_start(struct pci_epc *epc)
 {
+	struct qemu_ep *qep = epc_get_drvdata(epc);
+
+	pr_info("%s\n", __func__);
+
+	qemu_ep_ctl_write8(qep, 0, 1);
+
 	return 0;
 }
 
@@ -167,6 +196,8 @@ static const struct pci_epc_ops qemu_epc_ops = {
 	.start = qemu_ep_start,
 	.get_features = qemu_ep_get_features,
 };
+
+
 
 static int qemu_ep_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
@@ -219,17 +250,35 @@ static int qemu_ep_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_disable_pdev;
 	}
 
-	qep->cfg_base = pci_iomap(pdev, 0, PCI_CFG_SPACE_SIZE);
+	qep->cfg_base = pci_iomap(pdev, 0, PCI_CFG_SPACE_EXP_SIZE);
 	if (!qep->cfg_base) {
 		dev_err(dev, "Cannot map device registers\n");
 		err = -ENOMEM;
 		goto err_disable_pdev;
 	}
 
+	qep->bar_base = pci_iomap(pdev, 1, QEMU_EP_BAR_CFG_SIZE);
+	if (!qep->bar_base) {
+		dev_err(dev, "Cannot map device register for bar\n");
+		err = -ENOMEM;
+		goto err_unmap_cfg;
+	}
+
+	qep->ctl_base = pci_iomap(pdev, 2, 64);
+	if (!qep->bar_base) {
+		dev_err(dev, "Cannot map ctrl register\n");
+		err = -ENOMEM;
+		goto err_unmap_bar;
+	}
+
 	pci_set_master(pdev);
 
 	return 0;
 
+err_unmap_bar:
+	pci_iounmap(pdev, qep->bar_base);
+err_unmap_cfg:
+	pci_iounmap(pdev, qep->cfg_base);
 err_disable_pdev:
 	pci_disable_device(pdev);
 err_release_epc:
