@@ -16,6 +16,13 @@
  */
 
 enum {
+    QEMU_EPC_BAR_CTRL = 0,
+    QEMU_EPC_BAR_PCI_CFG = 1,
+    QEMU_EPC_BAR_BAR_CFG = 2,
+    QEMU_EPC_BAR_WINDOW = 3,
+};
+
+enum {
 	QEMU_EP_BAR_CFG_OFF_MASK = 0x00,
 	QEMU_EP_BAR_CFG_OFF_NUMBER = 0x01,
 	QEMU_EP_BAR_CFG_OFF_FLAGS = 0x02,
@@ -43,6 +50,7 @@ struct qemu_ep {
 };
 
 #define QEMU_EP_DRV_NAME "QEMU PCIe EP driver"
+#define QEMU_EPC_VERSION 0x00
 
 static inline u8 qemu_ep_cfg_read8(struct qemu_ep *qep, unsigned offset)
 {
@@ -153,7 +161,7 @@ static int qemu_ep_set_bar(struct pci_epc *epc, u8 fn, u8 vfn,
 	qemu_ep_bar_cfg_write8(qep, QEMU_EP_BAR_CFG_OFF_NUMBER, bar->barno);
 	qemu_ep_bar_cfg_write64(qep, QEMU_EP_BAR_CFG_OFF_PHYS_ADDR, bar->phys_addr);
   qemu_ep_bar_cfg_write64(qep, QEMU_EP_BAR_CFG_OFF_SIZE, bar->size);
-  qemu_ep_bar_cfg_write32(qep, QEMU_EP_BAR_CFG_OFF_FLAGS, bar->flags);
+  qemu_ep_bar_cfg_write8(qep, QEMU_EP_BAR_CFG_OFF_FLAGS, bar->flags);
 
   mask = qemu_ep_bar_cfg_read8(qep, QEMU_EP_BAR_CFG_OFF_MASK) | BIT(bar->barno);
   qemu_ep_bar_cfg_write8(qep, QEMU_EP_BAR_CFG_OFF_MASK, mask);
@@ -281,6 +289,11 @@ static int qemu_ep_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	dev_info(dev, "probe is called\n");
 
+	if (pdev->revision != QEMU_EPC_VERSION) {
+		dev_err(dev, "Driver supports version 0x%x, but device is 0x%x\n", QEMU_EPC_VERSION, pdev->revision);
+		return -ENOTSUPP;
+	}
+
 	qep = devm_kzalloc(dev, sizeof(*qep), GFP_KERNEL);
 	if (!qep) {
 		dev_err(dev, "Failed to allocate memory\n");
@@ -296,19 +309,12 @@ static int qemu_ep_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	epc_set_drvdata(epc, qep);
 
-	// TODO above valus should be got from qemu-ep.
 	epc->max_functions = 1;
 
 	err = pci_enable_device(pdev);
 	if (err) {
 		dev_err(dev, "Cannot enable PCI device\n");
 		goto err_release_epc;
-	}
-
-	if (!(pci_resource_flags(pdev, 0) & IORESOURCE_MEM)) {
-		dev_err(dev, "Cannot find proper PCI BAR\n");
-		err = -ENODEV;
-		goto err_disable_pdev;
 	}
 
 	err = pci_request_regions(pdev, QEMU_EP_DRV_NAME);
@@ -323,21 +329,21 @@ static int qemu_ep_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_disable_pdev;
 	}
 
-	qep->cfg_base = pci_iomap(pdev, 0, PCI_CFG_SPACE_EXP_SIZE);
+	qep->cfg_base = pci_iomap(pdev, QEMU_EPC_BAR_PCI_CFG, PCI_CFG_SPACE_EXP_SIZE);
 	if (!qep->cfg_base) {
 		dev_err(dev, "Cannot map device registers\n");
 		err = -ENOMEM;
 		goto err_disable_pdev;
 	}
 
-	qep->bar_base = pci_iomap(pdev, 1, QEMU_EP_BAR_CFG_SIZE);
+	qep->bar_base = pci_iomap(pdev, QEMU_EPC_BAR_BAR_CFG, QEMU_EP_BAR_CFG_SIZE);
 	if (!qep->bar_base) {
 		dev_err(dev, "Cannot map device register for bar\n");
 		err = -ENOMEM;
 		goto err_unmap_cfg;
 	}
 
-	qep->ctl_base = pci_iomap(pdev, 2, 64);
+	qep->ctl_base = pci_iomap(pdev, QEMU_EPC_BAR_CTRL, 64);
 	if (!qep->bar_base) {
 		dev_err(dev, "Cannot map ctrl register\n");
 		err = -ENOMEM;
