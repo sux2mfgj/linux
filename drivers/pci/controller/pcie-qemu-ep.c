@@ -26,6 +26,16 @@ enum {
 	QEMU_EP_BAR_CFG_SIZE = 0x18
 };
 
+enum {
+    QEMU_EP_CTRL_OFF_START = 0x00,
+    QEMU_EP_CTRL_OFF_WIN_START = 0x8,
+    QEMU_EP_CTRL_OFF_WIN_SIZE = 0x10,
+    QEMU_EP_CTRL_OFF_IRQ_TYPE = 0x18, 
+    QEMU_EP_CTRL_OFF_IRQ_NUM = 0x1c,
+    QEMU_EP_CTRL_OFF_OB_MAP_MASK = 0x20,
+    QEMU_EP_CTRL_OFF_OB_MAP_BASE = 0x28,
+};
+
 struct qemu_ep {
 	void __iomem *cfg_base;
 	void __iomem *bar_base;
@@ -85,9 +95,30 @@ static inline void qemu_ep_bar_cfg_write64(struct qemu_ep *qep, unsigned offset,
 	qemu_ep_bar_cfg_write32(qep, offset + 4, value >> 32);
 }
 
-static inline void qemu_ep_ctl_write8(struct qemu_ep *qep, unsigned offset, uint64_t value)
+static inline void qemu_ep_ctl_write8(struct qemu_ep *qep, unsigned offset, uint8_t value)
 {
 	iowrite8(value, qep->ctl_base + offset);
+}
+
+static inline void qemu_ep_ctl_write32(struct qemu_ep *qep, unsigned offset, uint32_t value)
+{
+	iowrite32(value, qep->ctl_base + offset);
+}
+
+static inline void qemu_ep_ctl_write64(struct qemu_ep *qep, unsigned offset, uint64_t value)
+{
+	qemu_ep_ctl_write32(qep, offset, (uint32_t)value);
+	qemu_ep_ctl_write32(qep, offset + 4, value >> 32);
+}
+
+static inline uint32_t qemu_ep_ctl_read32(struct qemu_ep *qep, unsigned offset)
+{
+	return ioread32(qep->ctl_base + offset);
+}
+
+static inline uint64_t qemu_ep_ctl_read64(struct qemu_ep *qep, unsigned offset)
+{
+	return (uint64_t)qemu_ep_ctl_read32(qep, offset + 4) << 32 | qemu_ep_ctl_read32(qep, offset);
 }
 
 static int qemu_ep_write_header(struct pci_epc *epc, u8 fn, u8 vfn,
@@ -143,21 +174,65 @@ static void qemu_ep_clear_bar(struct pci_epc *epc, u8 fn, u8 vfn,
 static int qemu_ep_map_addr(struct pci_epc *epc, u8 fn, u8 vfn,
 			    phys_addr_t addr, u64 pci_addr, size_t size)
 {
-	pr_info("%s phsy 0x%llx pci 0x%llx size 0x%lx\n", __func__, addr, pci_addr, size);
-	return -ENOTSUPP;
+	struct qemu_ep *qep = epc_get_drvdata(epc);
+	uint64_t mask, tmp;
+	unsigned idx = 0;
+	size_t offset;
+
+	mask = qemu_ep_ctl_read64(qep, QEMU_EP_CTRL_OFF_OB_MAP_MASK);
+	tmp = mask;
+	while(tmp) {
+		if (tmp & 0) {
+			break;
+		}
+
+		idx++;
+		tmp >>= 1;
+	}
+
+	offset = QEMU_EP_CTRL_OFF_OB_MAP_BASE + 0x20 * idx;
+	qemu_ep_ctl_write64(qep, offset, addr);
+	qemu_ep_ctl_write64(qep, offset + 0x8, pci_addr);
+	qemu_ep_ctl_write64(qep, offset + 0x10, size);
+
+	qemu_ep_ctl_write64(qep, QEMU_EP_CTRL_OFF_OB_MAP_MASK, mask | BIT(idx));
+
+	pr_info("%s: [%d] phys 0x%llx pci 0x%llx size 0x%lx\n", __func__, idx, addr, pci_addr, size);
+
+	return 0;
 }
 
 static void qemu_ep_unmap_addr(struct pci_epc *epc, u8 fn, u8 vfn,
 			       phys_addr_t addr)
 {
+	uint64_t mask;
+	uint64_t phys;
+	struct qemu_ep *qep = epc_get_drvdata(epc);
+
+	mask = qemu_ep_ctl_read64(qep, QEMU_EP_CTRL_OFF_OB_MAP_MASK);
+
+	for(int i = 0; i<16; i++) {
+
+		phys = qemu_ep_ctl_read64(qep, QEMU_EP_CTRL_OFF_OB_MAP_BASE + i * 0x20);
+		if (phys == addr) {
+			mask &= ~BIT(i);
+			qemu_ep_ctl_write64(qep, QEMU_EP_CTRL_OFF_OB_MAP_MASK, mask);
+		}
+	}
+
 	pr_info("%s addr 0x%llx\n", __func__, addr);
 }
 
 static int qemu_ep_raise_irq(struct pci_epc *epc, u8 fn, u8 vfn,
 			     enum pci_epc_irq_type type, u16 interrupt_num)
 {
-	pr_info("%s\n", __func__);
-	return -ENOTSUPP;
+	struct qemu_ep *qep = epc_get_drvdata(epc);
+	pr_info("%s type %d num %d\n", __func__, type, interrupt_num);
+
+	qemu_ep_ctl_write32(qep, QEMU_EP_CTRL_OFF_IRQ_TYPE, type);
+	qemu_ep_ctl_write32(qep, QEMU_EP_CTRL_OFF_IRQ_NUM, interrupt_num);
+
+	return 0;
 }
 
 static int qemu_ep_start(struct pci_epc *epc)
@@ -196,8 +271,6 @@ static const struct pci_epc_ops qemu_epc_ops = {
 	.start = qemu_ep_start,
 	.get_features = qemu_ep_get_features,
 };
-
-
 
 static int qemu_ep_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
@@ -269,6 +342,18 @@ static int qemu_ep_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		dev_err(dev, "Cannot map ctrl register\n");
 		err = -ENOMEM;
 		goto err_unmap_bar;
+	}
+
+	{
+		phys_addr_t phys = qemu_ep_ctl_read64(qep, QEMU_EP_CTRL_OFF_WIN_START);
+		uint64_t size = qemu_ep_ctl_read64(qep, QEMU_EP_CTRL_OFF_WIN_SIZE);
+		dev_info(dev, "window phys 0x%llx, size 0x%llx\n", phys, size);
+
+		err = pci_epc_mem_init(epc, phys, size, PAGE_SIZE);
+		if (err < 0) {
+			dev_err(dev, "oh no\n");
+			goto err_release_epc;
+		}
 	}
 
 	pci_set_master(pdev);
